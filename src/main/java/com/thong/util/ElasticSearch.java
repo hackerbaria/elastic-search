@@ -28,15 +28,14 @@ import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
 import org.elasticsearch.search.slice.SliceBuilder;
 
-import java.io.BufferedReader;
-import java.io.FileNotFoundException;
-import java.io.FileReader;
-import java.io.IOException;
+import java.io.*;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 public class ElasticSearch {
 
@@ -166,28 +165,29 @@ public class ElasticSearch {
 
     }
 
-    public List<Product> searchScroll(String index, int batchSize) {
+    public List<Product> searchScroll(String index,final int batchSize) {
         Instant start = Instant.now();
         // time passes
 
-        int s = 3;
-        SearchHit[] totalHits = new SearchHit[0];
-
-        for (int i = 0; i < s; i++) {
+        int numSlice = 3;
+        SearchHit[] resultHits = IntStream.range(0, numSlice).parallel().mapToObj(i -> {
             // The Scroll API can be used to retrieve a large number of results from a search request
+            SearchHit[] totalHits = new SearchHit[0];
+
             final Scroll scroll = new Scroll(TimeValue.timeValueMinutes(1L));
             SearchRequest searchRequest = new SearchRequest(index);
             searchRequest.scroll(scroll);
             SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder();
             searchSourceBuilder.query(QueryBuilders.matchAllQuery());
-            searchSourceBuilder.slice(new SliceBuilder(i, s));
+            searchSourceBuilder.slice(new SliceBuilder(i, numSlice));
+            searchSourceBuilder.size(batchSize);
             searchRequest.source(searchSourceBuilder);
             try {
 
                 SearchResponse searchResponse = client.search(searchRequest, RequestOptions.DEFAULT);
                 String scrollId = searchResponse.getScrollId();
                 SearchHit[] searchHits = searchResponse.getHits().getHits();
-                totalHits = searchHits;
+                totalHits = ArrayUtils.addAll(totalHits, searchHits);
 
                 while (searchHits != null && searchHits.length > 0) {
 
@@ -212,7 +212,10 @@ public class ElasticSearch {
                 e.printStackTrace();
                 return null;
             }
-        }
+            return totalHits;
+        }).reduce(new SearchHit[0], ArrayUtils::addAll);
+
+
         try {
             client.close();
         } catch (IOException e) {
@@ -223,7 +226,7 @@ public class ElasticSearch {
 
         System.out.println("timeElapsed: " + timeElapsed.getSeconds());
 
-        return convertSearchHitToObject(totalHits, Product.class);
+        return convertSearchHitToObject(resultHits, Product.class);
 
 
 
